@@ -7,11 +7,9 @@ run apt -y update
 run env DEBIAN_FRONTEND=noninteractive apt -y install git pkg-config autoconf automake libtool make libgl-dev libsdl2-dev \
                         libglm-dev g++ libsndfile1-dev
 
-run git clone https://github.com/projectM-visualizer/projectm.git
+add projectm /projectm
 
-workdir projectm
-
-run git checkout v3.1.12
+workdir /projectm
 
 run autoreconf --install
 
@@ -22,3 +20,10 @@ run make
 
 run make install
 
+add pmSND /pmSND
+
+workdir /pmSND
+
+run make
+
+run make install
