@@ -3,7 +3,7 @@
 
 
 all:
-	g++ pmSND.cpp projectM_SND_main.cpp pmSND.hpp \
+	g++ -DUSE_GLES pmSND.cpp projectM_SND_main.cpp pmSND.hpp \
 	-I../projectm/src/libprojectM -I../projectm/src/libprojectM/Renderer/hlslparser/src \
 	-Wl,-rpath -Wl,/usr/local/lib \
 	-lprojectM -lsndfile -lGL -lSDL2 -o projectMSND

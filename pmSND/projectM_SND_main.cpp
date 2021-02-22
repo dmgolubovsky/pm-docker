@@ -35,6 +35,8 @@
 #include <iostream>
 #include <string>
 
+#include <unistd.h>
+
 #include "pmSND.hpp"
 
 #if OGL_DEBUG
@@ -108,168 +110,45 @@ std::string getConfigFilePath(std::string datadir_path) {
   }
 }
 
-// ref https://blogs.msdn.microsoft.com/matthew_van_eerde/2008/12/16/sample-wasapi-loopback-capture-record-what-you-hear/
-#ifdef WASAPI_LOOPBACK
+//	-p preset name
+//
 
-HRESULT get_default_device(IMMDevice **ppMMDevice) {
-	HRESULT hr = S_OK;
-	IMMDeviceEnumerator *pMMDeviceEnumerator;
-
-	// activate a device enumerator
-	hr = CoCreateInstance(
-		__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL,
-		__uuidof(IMMDeviceEnumerator),
-		(void**)&pMMDeviceEnumerator
-	);
-	if (FAILED(hr)) {
-		ERR(L"CoCreateInstance(IMMDeviceEnumerator) failed: hr = 0x%08x", hr);
-		return hr;
-	}
-
-	// get the default render endpoint
-	hr = pMMDeviceEnumerator->GetDefaultAudioEndpoint(eRender, eConsole, ppMMDevice);
-	if (FAILED(hr)) {
-		ERR(L"IMMDeviceEnumerator::GetDefaultAudioEndpoint failed: hr = 0x%08x", hr);
-		return hr;
-	}
-
-	return S_OK;
+void usage(char *av0) {
+    std::cerr << "Usage: " << av0 << " [-p preset] [-e] audiofile" << std::endl;
+    exit(EXIT_FAILURE);
 }
-
-#endif /** WASAPI_LOOPBACK */
 
 int main(int argc, char *argv[]) {
 #ifndef WIN32
 srand((int)(time(NULL)));
 #endif
 
-#ifdef WASAPI_LOOPBACK
-	HRESULT hr;
+    int opt;
 
-    hr = CoInitialize(NULL);
-    if (FAILED(hr)) {
-        ERR(L"CoInitialize failed: hr = 0x%08x", hr);
+    std::string presetName;
+    std::string audioFile;
+
+    if (argc == 1) {
+	usage(argv[0]);
     }
 
-
-	IMMDevice *pMMDevice(NULL);
-    // open default device if not specified
-    if (NULL == pMMDevice) {
-        hr = get_default_device(&pMMDevice);
-        if (FAILED(hr)) {
-            return hr;
-        }
-    }
-
-	bool bInt16 = false;
-    UINT32 foo = 0;
-	PUINT32 pnFrames = &foo;
-
-	// activate an IAudioClient
-	IAudioClient *pAudioClient;
-	hr = pMMDevice->Activate(
-		__uuidof(IAudioClient),
-		CLSCTX_ALL, NULL,
-		(void**)&pAudioClient
-	);
-	if (FAILED(hr)) {
-		ERR(L"IMMDevice::Activate(IAudioClient) failed: hr = 0x%08x", hr);
-		return hr;
-	}
-
-	// get the default device periodicity
-	REFERENCE_TIME hnsDefaultDevicePeriod;
-	hr = pAudioClient->GetDevicePeriod(&hnsDefaultDevicePeriod, NULL);
-	if (FAILED(hr)) {
-		ERR(L"IAudioClient::GetDevicePeriod failed: hr = 0x%08x", hr);
-		return hr;
-	}
-
-	// get the default device format
-	WAVEFORMATEX *pwfx;
-	hr = pAudioClient->GetMixFormat(&pwfx);
-	if (FAILED(hr)) {
-		ERR(L"IAudioClient::GetMixFormat failed: hr = 0x%08x", hr);
-		return hr;
-	}
-
-	if (bInt16) {
-		// coerce int-16 wave format
-		// can do this in-place since we're not changing the size of the format
-		// also, the engine will auto-convert from float to int for us
-		switch (pwfx->wFormatTag) {
-		case WAVE_FORMAT_IEEE_FLOAT:
-			pwfx->wFormatTag = WAVE_FORMAT_PCM;
-			pwfx->wBitsPerSample = 16;
-			pwfx->nBlockAlign = pwfx->nChannels * pwfx->wBitsPerSample / 8;
-			pwfx->nAvgBytesPerSec = pwfx->nBlockAlign * pwfx->nSamplesPerSec;
-			break;
-
-		case WAVE_FORMAT_EXTENSIBLE:
-		{
-			// naked scope for case-local variable
-			PWAVEFORMATEXTENSIBLE pEx = reinterpret_cast<PWAVEFORMATEXTENSIBLE>(pwfx);
-			if (IsEqualGUID(KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, pEx->SubFormat)) {
-				pEx->SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
-				pEx->Samples.wValidBitsPerSample = 16;
-				pwfx->wBitsPerSample = 16;
-				pwfx->nBlockAlign = pwfx->nChannels * pwfx->wBitsPerSample / 8;
-				pwfx->nAvgBytesPerSec = pwfx->nBlockAlign * pwfx->nSamplesPerSec;
-			}
-			else {
-				ERR(L"%s", L"Don't know how to coerce mix format to int-16");
-				return E_UNEXPECTED;
-			}
-		}
+    while ((opt = getopt(argc, argv, "ep:")) != -1) {
+	switch (opt) {
+	    case 'p':
+		presetName = optarg;
 		break;
-
-		default:
-			ERR(L"Don't know how to coerce WAVEFORMATEX with wFormatTag = 0x%08x to int-16", pwfx->wFormatTag);
-			return E_UNEXPECTED;
-		}
+	    default:
+		usage(argv[0]);
 	}
-        
-	UINT32 nBlockAlign = pwfx->nBlockAlign;
-	*pnFrames = 0;
+    }
+    if ((optind > argc) || (argv[optind] == NULL)) {
+	usage(argv[0]);
+    }
+    audioFile = argv[optind];
+    if (audioFile.empty()) {
+	usage(argv[0]);
+    }
 
-	// call IAudioClient::Initialize
-	// note that AUDCLNT_STREAMFLAGS_LOOPBACK and AUDCLNT_STREAMFLAGS_EVENTCALLBACK
-	// do not work together...
-	// the "data ready" event never gets set
-	// so we're going to do a timer-driven loop
-	hr = pAudioClient->Initialize(
-		AUDCLNT_SHAREMODE_SHARED,
-		AUDCLNT_STREAMFLAGS_LOOPBACK,
-		0, 0, pwfx, 0
-	);
-	if (FAILED(hr)) {
-		ERR(L"pAudioClient->Initialize error");
-		return hr;
-	}
-
-	// activate an IAudioCaptureClient
-	IAudioCaptureClient *pAudioCaptureClient;
-	hr = pAudioClient->GetService(
-		__uuidof(IAudioCaptureClient),
-		(void**)&pAudioCaptureClient
-	);
-	if (FAILED(hr)) {
-		ERR(L"pAudioClient->GetService error");
-		return hr;
-	}
-
-	// call IAudioClient::Start
-	hr = pAudioClient->Start();
-	if (FAILED(hr)) {
-		ERR(L"pAudioClient->Start error");
-		return hr;
-	}
-	
-	bool bDone = false;
-	bool bFirstPacket = true;
-    UINT32 nPasses = 0;
-
-#endif /** WASAPI_LOOPBACK */
 
 #if UNLOCK_FPS
     setenv("vblank_mode", "0", 1);
@@ -396,6 +275,11 @@ srand((int)(time(NULL)));
         app = new projectMSND(settings, 0);
     }
 
+    // Populate the app fields from command line args
+
+    app->sndFileName = audioFile;
+    app->presetName = presetName;
+
     // If our config or hard-coded settings create a resolution smaller than the monitors, then resize the SDL window to match.
     if (height > app->getWindowHeight() || width > app->getWindowWidth()) {
         SDL_SetWindowSize(win, app->getWindowWidth(),app->getWindowHeight());
@@ -451,12 +335,6 @@ modKey = "CMD";
 		app->beginAudioCapture();
 #endif
 
-#ifdef WASAPI_LOOPBACK
-	// Default to WASAPI loopback if it was enabled at compilation.
-	app->wasapi = true;
-	// Notify that loopback capture was started.
-	SDL_Log("Opened audio capture loopback.");
-#endif
 
 #if TEST_ALL_PRESETS
     uint buildErrors = 0;
