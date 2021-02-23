@@ -36,6 +36,7 @@
 #include <string>
 
 #include <unistd.h>
+#include <sndfile.h>
 
 #include "pmSND.hpp"
 
@@ -111,10 +112,10 @@ std::string getConfigFilePath(std::string datadir_path) {
 }
 
 //	-p preset name
-//
+//      -D datadir path
 
 void usage(char *av0) {
-    std::cerr << "Usage: " << av0 << " [-p preset] [-e] audiofile" << std::endl;
+    std::cerr << "Usage: " << av0 << " [-p preset] [-D datadir] audiofile" << std::endl;
     exit(EXIT_FAILURE);
 }
 
@@ -127,15 +128,19 @@ srand((int)(time(NULL)));
 
     std::string presetName;
     std::string audioFile;
+    std::string datadirPath;
 
     if (argc == 1) {
 	usage(argv[0]);
     }
 
-    while ((opt = getopt(argc, argv, "ep:")) != -1) {
+    while ((opt = getopt(argc, argv, "D:p:")) != -1) {
 	switch (opt) {
 	    case 'p':
 		presetName = optarg;
+		break;
+	    case 'D':
+		datadirPath = optarg;
 		break;
 	    default:
 		usage(argv[0]);
@@ -150,6 +155,18 @@ srand((int)(time(NULL)));
     }
 
 
+    // Open the audio file
+
+    SF_INFO sfinfo;
+    SNDFILE *sndf;
+
+    sndf = sf_open(audioFile.c_str(), SFM_READ, &sfinfo);
+    if (sndf == NULL) {
+	std::cerr << "Error opening audio file: " << sf_strerror(NULL) << std::endl;
+	exit(EXIT_FAILURE);
+    }
+
+
 #if UNLOCK_FPS
     setenv("vblank_mode", "0", 1);
 #endif
@@ -159,6 +176,8 @@ srand((int)(time(NULL)));
         SDL_Log("SDL version 2.0.5 or greater is required. You have %i.%i.%i", SDL_MAJOR_VERSION, SDL_MINOR_VERSION, SDL_PATCHLEVEL);
         return 1;
     }
+
+    SDL_Log("Opened audio file %s: %ld frames, %d channels, samplerate %d\n", audioFile.c_str(), sfinfo.frames, sfinfo.channels, sfinfo.samplerate);
 
     // default window size to usable bounds (e.g. minus menubar and dock)
     SDL_Rect initialWindowBounds;
@@ -226,59 +245,54 @@ srand((int)(time(NULL)));
     std::string base_path = DATADIR_PATH;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Using data directory: %s\n", base_path.c_str());
 
-    // load configuration file
-    std::string configFilePath = getConfigFilePath(base_path);
-
-    if (! configFilePath.empty()) {
-        // found config file, use it
-        app = new projectMSND(configFilePath, 0);
-        SDL_Log("Using config from %s", configFilePath.c_str());
-    } else {
-        base_path = SDL_GetBasePath();
-        SDL_Log("Config file not found, using built-in settings. Data directory=%s\n", base_path.c_str());
-
-		// Get max refresh rate from attached displays to use as built-in max FPS.
-		int i = 0;
-		int maxRefreshRate = 0;
-		SDL_DisplayMode current;
-		for (i = 0; i < SDL_GetNumVideoDisplays(); ++i)
-		{
-			if (SDL_GetCurrentDisplayMode(i, &current) == 0)
-			{
-				if (current.refresh_rate > maxRefreshRate) maxRefreshRate = current.refresh_rate;
-			}
-		}
-		if (maxRefreshRate <= 60) maxRefreshRate = 60;
-
-        float heightWidthRatio = (float)height / (float)width;
-        projectM::Settings settings;
-        settings.windowWidth = width;
-        settings.windowHeight = height;
-        settings.meshX = 128;
-        settings.meshY = settings.meshX * heightWidthRatio;
-		settings.fps = maxRefreshRate;
-        settings.smoothPresetDuration = 3; // seconds
-        settings.presetDuration = 22; // seconds
-		settings.hardcutEnabled = true;
-		settings.hardcutDuration = 60;
-		settings.hardcutSensitivity = 1.0;
-        settings.beatSensitivity = 1.0;
-        settings.aspectCorrection = 1;
-        settings.shuffleEnabled = 1;
-        settings.softCutRatingsEnabled = 1; // ???
-        // get path to our app, use CWD or resource dir for presets/fonts/etc
-        settings.presetURL = base_path + "presets";
-//        settings.presetURL = base_path + "presets/presets_shader_test";
-        settings.menuFontURL = base_path + "fonts/Vera.ttf";
-        settings.titleFontURL = base_path + "fonts/Vera.ttf";
-        // init with settings
-        app = new projectMSND(settings, 0);
+    base_path = datadirPath.empty()?DATADIR_PATH:datadirPath;
+    if (base_path.back() != '/') {
+        base_path = base_path + "/";
     }
+    SDL_Log("Config file not found, using built-in settings. Data directory=%s\n", base_path.c_str());
+
+    // Get max refresh rate from attached displays to use as built-in max FPS.
+    int i = 0;
+    int maxRefreshRate = 0;
+    SDL_DisplayMode current;
+    for (i = 0; i < SDL_GetNumVideoDisplays(); ++i)
+    {
+	if (SDL_GetCurrentDisplayMode(i, &current) == 0)
+	{
+    	    if (current.refresh_rate > maxRefreshRate) maxRefreshRate = current.refresh_rate;
+	}
+    }
+    if (maxRefreshRate <= 60) maxRefreshRate = 60;
+
+    float heightWidthRatio = (float)height / (float)width;
+    projectM::Settings settings;
+    settings.windowWidth = width;
+    settings.windowHeight = height;
+    settings.meshX = 128;
+    settings.meshY = settings.meshX * heightWidthRatio;
+    settings.fps = 25; //maxRefreshRate;
+    settings.smoothPresetDuration = 3; // seconds
+    settings.presetDuration = 22; // seconds
+    settings.hardcutEnabled = true;
+    settings.hardcutDuration = 60;
+    settings.hardcutSensitivity = 1.0;
+    settings.beatSensitivity = 1.0;
+    settings.aspectCorrection = 1;
+    settings.shuffleEnabled = 1;
+    settings.softCutRatingsEnabled = 1; // ???
+    // get path to our app, use CWD or resource dir for presets/fonts/etc
+    settings.presetURL = base_path + "presets";
+    settings.menuFontURL = base_path + "fonts/Vera.ttf";
+    settings.titleFontURL = base_path + "fonts/Vera.ttf";
+    // init with settings
+    app = new projectMSND(settings, 0);
 
     // Populate the app fields from command line args
 
     app->sndFileName = audioFile;
     app->presetName = presetName;
+    app->sndFile = sndf;
+    app->sndInfo = sfinfo;
 
     // If our config or hard-coded settings create a resolution smaller than the monitors, then resize the SDL window to match.
     if (height > app->getWindowHeight() || width > app->getWindowWidth()) {
@@ -293,9 +307,6 @@ srand((int)(time(NULL)));
     // Create a help menu specific to SDL
     std::string modKey = "CTRL";
 
-#if __APPLE_
-modKey = "CMD";
-#endif
 
     std::string sdlHelpMenu = "\n"
 		"F1: This help menu""\n"
@@ -350,6 +361,7 @@ modKey = "CMD";
         fprintf(stdout, "Preset loading errors: %d/%d [%d%%]\n", buildErrors, app->getPlaylistSize(), (buildErrors*100) / app->getPlaylistSize());
     }
 
+    sf_close(app->sndFile)
     delete app;
 
     return PROJECTM_SUCCESS;
@@ -368,9 +380,22 @@ modKey = "CMD";
     if (fps <= 0)
         fps = 60;
     const Uint32 frame_delay = 1000/fps;
+    int asamples = app->sndInfo.samplerate / fps;
+    std::cout << "Videoframe: " << frame_delay << " ms.; " << asamples << " audio samples/video frame" << std::endl;
     Uint32 last_time = SDL_GetTicks();
     while (! app->done) {
         app->renderFrame();
+
+        // Get samples from the audio file as needed per frame
+	
+	float samplebuf[asamples * app->sndInfo.channels * sizeof(float)];
+        sf_count_t nsamples = sf_readf_float(app->sndFile, samplebuf, asamples);
+	std::cout << "read " << nsamples << " samples" << std::endl;
+	if (nsamples < asamples) {
+            sf_close(app->sndFile);
+	    app->done = 1;
+	}
+
 #if FAKE_AUDIO
 		app->fakeAudio  = true;
 #endif
@@ -379,52 +404,6 @@ modKey = "CMD";
 		{
 			app->addFakePCM();
 		}
-#ifdef WASAPI_LOOPBACK
-		if (app->wasapi) {
-			// drain data while it is available
-			nPasses++;
-			UINT32 nNextPacketSize;
-			for (
-				hr = pAudioCaptureClient->GetNextPacketSize(&nNextPacketSize);
-				SUCCEEDED(hr) && nNextPacketSize > 0;
-				hr = pAudioCaptureClient->GetNextPacketSize(&nNextPacketSize)
-				) {
-				// get the captured data
-				BYTE *pData;
-				UINT32 nNumFramesToRead;
-				DWORD dwFlags;
-
-				hr = pAudioCaptureClient->GetBuffer(
-					&pData,
-					&nNumFramesToRead,
-					&dwFlags,
-					NULL,
-					NULL
-				);
-				if (FAILED(hr)) {
-					return hr;
-				}
-
-				LONG lBytesToWrite = nNumFramesToRead * nBlockAlign;
-
-				/** Add the waveform data */
-				app->pcm()->addPCMfloat((float *)pData, nNumFramesToRead);
-
-				*pnFrames += nNumFramesToRead;
-
-				hr = pAudioCaptureClient->ReleaseBuffer(nNumFramesToRead);
-				if (FAILED(hr)) {
-					return hr;
-				}
-
-				bFirstPacket = false;
-			}
-
-			if (FAILED(hr)) {
-				return hr;
-			}
-		}
-#endif /** WASAPI_LOOPBACK */
 
 #if UNLOCK_FPS
         frame_count++;
@@ -450,10 +429,6 @@ modKey = "CMD";
 		app->endAudioCapture();
 #endif
 
-    // Write back config with current app settings (if we loaded from a config file to begin with)
-    if (!configFilePath.empty()) {
-        projectM::writeConfig(configFilePath, app->settings());
-    }
     delete app;
 
     return PROJECTM_SUCCESS;

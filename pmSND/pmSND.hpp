@@ -41,7 +41,7 @@
 #include <sdltoprojectM.h>
 #include <iostream>
 #include <sys/stat.h>
-
+#include <sndfile.h>
 
 
 #include <SDL2/SDL.h>
@@ -90,6 +90,8 @@ public:
     std::string sndFileName;
     std::string presetName;
     std::string getActivePresetName();
+    SNDFILE *sndFile;
+    SF_INFO sndInfo;
     void addFakePCM();
     
     virtual void presetSwitchedEvent(bool isHardCut, size_t index) const;
