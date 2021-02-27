@@ -405,6 +405,25 @@ srand((int)(time(NULL)));
 
         printf("pcm ready\n");
     }
+
+    int npresets = app->getPlaylistSize();
+
+    std::cout << "N presets: " << npresets << std::endl;
+
+    int sel = -1;
+    for (int i = 0 ; i < npresets ; i++) {
+        if (presetName == app->getPresetName(i)) {
+	   app->selectPreset(i);
+	   app->setPresetLock(1);
+	   sel = i;
+	   break;
+        }
+    }
+
+    if (sel == -1) {
+        std::cerr << "Could not find preset " << presetName << std::endl;
+    }
+
     while (! app->done) {
         app->renderFrame();
 
