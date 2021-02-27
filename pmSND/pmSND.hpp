@@ -96,6 +96,10 @@ public:
     
     virtual void presetSwitchedEvent(bool isHardCut, size_t index) const;
 
+    unsigned short audioChannelsCount;
+    static void audioInputCallbackF32(void *userdata, unsigned char *stream, int len);
+    static void audioInputCallbackS16(void *userdata, unsigned char *stream, int len);
+
 private:
     SDL_Window *win;
     SDL_GLContext *glCtx;
@@ -111,15 +115,12 @@ private:
     // audio input device characteristics
     unsigned int NumAudioDevices;
     unsigned int CurAudioDevice;
-    unsigned short audioChannelsCount;
     unsigned short audioSampleRate;
     unsigned short audioSampleCount;
     SDL_AudioFormat audioFormat;
     SDL_AudioDeviceID audioDeviceID;
     SDL_AudioDeviceID selectedAudioDevice;
 
-    static void audioInputCallbackF32(void *userdata, unsigned char *stream, int len);
-    static void audioInputCallbackS16(void *userdata, unsigned char *stream, int len);
 
     void scrollHandler(SDL_Event *);
     void keyHandler(SDL_Event *);

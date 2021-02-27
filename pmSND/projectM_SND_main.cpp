@@ -37,6 +37,7 @@
 
 #include <unistd.h>
 #include <sndfile.h>
+#include <alsa/asoundlib.h>
 
 #include "pmSND.hpp"
 
@@ -113,9 +114,10 @@ std::string getConfigFilePath(std::string datadir_path) {
 
 //	-p preset name
 //      -D datadir path
+//      -d playback audio device
 
 void usage(char *av0) {
-    std::cerr << "Usage: " << av0 << " [-p preset] [-D datadir] audiofile" << std::endl;
+    std::cerr << "Usage: " << av0 << " [-p preset] [-D datadir] [-d device] audiofile" << std::endl;
     exit(EXIT_FAILURE);
 }
 
@@ -129,18 +131,22 @@ srand((int)(time(NULL)));
     std::string presetName;
     std::string audioFile;
     std::string datadirPath;
+    std::string pcmDevice;
 
     if (argc == 1) {
 	usage(argv[0]);
     }
 
-    while ((opt = getopt(argc, argv, "D:p:")) != -1) {
+    while ((opt = getopt(argc, argv, "d:D:p:")) != -1) {
 	switch (opt) {
 	    case 'p':
 		presetName = optarg;
 		break;
 	    case 'D':
 		datadirPath = optarg;
+		break;
+	    case 'd':
+		pcmDevice = optarg;
 		break;
 	    default:
 		usage(argv[0]);
@@ -167,10 +173,7 @@ srand((int)(time(NULL)));
     }
 
 
-#if UNLOCK_FPS
-    setenv("vblank_mode", "0", 1);
-#endif
-    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO);
+    SDL_Init(SDL_INIT_VIDEO);
 
     if (! SDL_VERSION_ATLEAST(2, 0, 5)) {
         SDL_Log("SDL version 2.0.5 or greater is required. You have %i.%i.%i", SDL_MAJOR_VERSION, SDL_MINOR_VERSION, SDL_PATCHLEVEL);
@@ -303,49 +306,16 @@ srand((int)(time(NULL)));
         SDL_SetWindowSize(win, width, height);
         SDL_SetWindowPosition(win, 0, 0);
     }
-
-    // Create a help menu specific to SDL
-    std::string modKey = "CTRL";
-
-
-    std::string sdlHelpMenu = "\n"
-		"F1: This help menu""\n"
-		"F3: Show preset name""\n"
-		"F4: Show details and statistics""\n"
-		"F5: Show FPS""\n"
-		"L or SPACE: Lock/Unlock Preset""\n"
-		"R: Random preset""\n"
-		"N: Next preset""\n"
-		"P: Previous preset""\n"
-		"UP: Increase Beat Sensitivity""\n"
-		"DOWN: Decrease Beat Sensitivity""\n"
-		"Left Click: Drop Random Waveform on Screen""\n"
-		"Right Click: Remove Random Waveform""\n" +
-		modKey + "+Right Click: Remove All Random Waveforms""\n" +
-		modKey + "+I: Audio Input (listen to next device)""\n" +
-		modKey + "+M: Change Monitor""\n" +
-		modKey + "+S: Stretch Monitors""\n" +
-		modKey + "+F: Fullscreen""\n" +
-		modKey + "+Q: Quit";
-    app->setHelpText(sdlHelpMenu.c_str());
     app->init(win, &glCtx);
 
 #if STEREOSCOPIC_SBS
 	app->toggleFullScreen();
 #endif
-
 #if OGL_DEBUG && !USE_GLES
     glEnable(GL_DEBUG_OUTPUT);
     glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
     glDebugMessageCallback(DebugLog, NULL);
 #endif
-
-#if !FAKE_AUDIO && !WASAPI_LOOPBACK
-	// get an audio input device
-	if (app->openAudioInput())
-		app->beginAudioCapture();
-#endif
-
 
 #if TEST_ALL_PRESETS
     uint buildErrors = 0;
@@ -366,14 +336,6 @@ srand((int)(time(NULL)));
 
     return PROJECTM_SUCCESS;
 #endif
-
-#if UNLOCK_FPS
-    int32_t frame_count = 0;
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC_RAW, &now);
-    int64_t start = ( ((int64_t)now.tv_sec * 1000L) + (now.tv_nsec / 1000000L) );
-#endif
-
     // standard main loop
     int fps = app->settings().fps;
     printf("fps: %d\n", fps);
@@ -383,51 +345,103 @@ srand((int)(time(NULL)));
     int asamples = app->sndInfo.samplerate / fps;
     std::cout << "Videoframe: " << frame_delay << " ms.; " << asamples << " audio samples/video frame" << std::endl;
     Uint32 last_time = SDL_GetTicks();
+    app->audioChannelsCount = app->sndInfo.channels;
+    snd_pcm_t *pcm_handle = NULL;
+    snd_pcm_hw_params_t *params;
+    unsigned int tmp;
+    snd_pcm_uframes_t period, bufsz;
+    unsigned int pcm;
+    if (!pcmDevice.empty()) {
+        pcm = snd_pcm_open(&pcm_handle, pcmDevice.c_str(), SND_PCM_STREAM_PLAYBACK, 0);
+        if (pcm < 0) {
+            std::cerr << "cannot open PCM " << snd_strerror(pcm) << std::endl;
+	    exit(EXIT_FAILURE);
+        }
+    }
+
+    if (pcm_handle != NULL) {
+
+        /* Allocate parameters object and fill it with default values*/
+        snd_pcm_hw_params_alloca(&params);
+
+        snd_pcm_hw_params_any(pcm_handle, params);
+
+        /* Set parameters */
+        if (pcm = snd_pcm_hw_params_set_access(pcm_handle, params,
+             SND_PCM_ACCESS_RW_INTERLEAVED) < 0) 
+             printf("ERROR: Can't set interleaved mode. %s\n", snd_strerror(pcm));
+
+        if (pcm = snd_pcm_hw_params_set_format(pcm_handle, params,
+             SND_PCM_FORMAT_S16_LE) < 0) 
+             printf("ERROR: Can't set format. %s\n", snd_strerror(pcm));
+
+        if (pcm = snd_pcm_hw_params_set_channels(pcm_handle, params, app->sndInfo.channels) < 0) 
+             printf("ERROR: Can't set channels number. %s\n", snd_strerror(pcm));
+
+        if (pcm = snd_pcm_hw_params_set_rate_near(pcm_handle, params, (unsigned int *)&app->sndInfo.samplerate, 0) < 0) 
+             printf("ERROR: Can't set rate. %s\n", snd_strerror(pcm));
+
+        std::cout << "set sample rate " << app->sndInfo.samplerate << std::endl;
+
+        printf("PCM name: '%s'\n", snd_pcm_name(pcm_handle));
+
+        printf("PCM state: %s\n", snd_pcm_state_name(snd_pcm_state(pcm_handle)));
+
+        snd_pcm_hw_params_get_channels(params, &tmp);
+        printf("channels: %i\n", tmp);
+ 
+        snd_pcm_hw_params_get_rate(params, &tmp, 0);
+        printf("rate: %d bps\n", tmp);
+
+
+     /* Write parameters */
+        if (pcm = snd_pcm_hw_params(pcm_handle, params) < 0)
+            printf("ERROR: Can't set hardware parameters. %s\n", snd_strerror(pcm));
+
+
+        snd_pcm_hw_params_get_period_size(params, &period, 0);
+        std::cout << "period: " << period << std::endl;
+
+
+        printf("pcm ready\n");
+    }
     while (! app->done) {
         app->renderFrame();
 
         // Get samples from the audio file as needed per frame
-	
-	float samplebuf[asamples * app->sndInfo.channels * sizeof(float)];
-        sf_count_t nsamples = sf_readf_float(app->sndFile, samplebuf, asamples);
-	std::cout << "read " << nsamples << " samples" << std::endl;
-	if (nsamples < asamples) {
+
+	int smplsize = app->sndInfo.channels * sizeof(short),
+	    buflen = asamples * smplsize;
+	unsigned char samplebuf[buflen];
+        sf_count_t nsamples = sf_readf_short(app->sndFile, (short *)samplebuf, asamples);
+	if (nsamples <= 0) {
             sf_close(app->sndFile);
 	    app->done = 1;
+	} else {
+	    app->pcm()->addPCM16Data((short *)samplebuf, nsamples);
 	}
-
-#if FAKE_AUDIO
-		app->fakeAudio  = true;
-#endif
-		// fakeAudio can also be enabled dynamically.
-		if (app->fakeAudio )
-		{
-			app->addFakePCM();
-		}
-
-#if UNLOCK_FPS
-        frame_count++;
-        clock_gettime(CLOCK_MONOTONIC_RAW, &now);
-        if (( ((int64_t)now.tv_sec * 1000L) + (now.tv_nsec / 1000000L) ) - start > 5000) {
-            SDL_GL_DeleteContext(glCtx);
-            delete(app);
-            fprintf(stdout, "Frames[%d]\n", frame_count);
-            exit(0);
-        }
-#else
+	unsigned char *ptr;
+	sf_count_t left;
+	if (pcm_handle != NULL) {
+	    for(ptr = samplebuf, left = nsamples; left > 0 ; left -= period, ptr += period * smplsize) {
+	        sf_count_t wrtsize = (left > period)?period:left;
+                if (pcm = snd_pcm_writei(pcm_handle, ptr, wrtsize) == -EPIPE) {
+ 	            snd_pcm_prepare(pcm_handle);
+                } else if (pcm < 0) {
+                    printf("ERROR. Can't write to PCM device. %s\n", snd_strerror(pcm));
+  	        }
+	    }
+	}
         app->pollEvent();
         Uint32 elapsed = SDL_GetTicks() - last_time;
-        if (elapsed < frame_delay)
-            SDL_Delay(frame_delay - elapsed);
+	if (pcm_handle == NULL) {
+            if (elapsed < frame_delay)
+                SDL_Delay(frame_delay - elapsed);
+	}
         last_time = SDL_GetTicks();
-#endif
     }
     
     SDL_GL_DeleteContext(glCtx);
-#if !FAKE_AUDIO
-	if (!app->wasapi) // not currently using WASAPI, so we need to endAudioCapture.
-		app->endAudioCapture();
-#endif
 
     delete app;
 
