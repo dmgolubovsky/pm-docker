@@ -115,9 +115,11 @@ std::string getConfigFilePath(std::string datadir_path) {
 //	-p preset name
 //      -D datadir path
 //      -d playback audio device
+//      -b seconds before audio starts
+//      -a seconds after audio ends
 
 void usage(char *av0) {
-    std::cerr << "Usage: " << av0 << " [-p preset] [-D datadir] [-d device] audiofile" << std::endl;
+    std::cerr << "Usage: " << av0 << " [-p preset] [-D datadir] [-d device] [-b before] [-a after] [-s beatsens] audiofile" << std::endl;
     exit(EXIT_FAILURE);
 }
 
@@ -127,6 +129,8 @@ srand((int)(time(NULL)));
 #endif
 
     int opt;
+    long int before = 0, after = 0;
+    float beatsens = 1.0;
 
     std::string presetName;
     std::string audioFile;
@@ -137,7 +141,8 @@ srand((int)(time(NULL)));
 	usage(argv[0]);
     }
 
-    while ((opt = getopt(argc, argv, "d:D:p:")) != -1) {
+    while ((opt = getopt(argc, argv, "s:a:b:d:D:p:")) != -1) {
+	char *endptr;
 	switch (opt) {
 	    case 'p':
 		presetName = optarg;
@@ -147,6 +152,28 @@ srand((int)(time(NULL)));
 		break;
 	    case 'd':
 		pcmDevice = optarg;
+		break;
+	    case 's':
+		errno = 0;
+		beatsens = strtof(optarg, &endptr);
+		if (errno) {
+		    std::cerr << "-s: cannot convert " << optarg << " to a number" << std::endl;
+		    exit(EXIT_FAILURE);
+		}
+		break;
+	    case 'b':
+		before = strtol(optarg, &endptr, 10);
+		if (endptr == optarg) {
+		    std::cerr << "-b: cannot convert " << optarg << " to a number" << std::endl;
+		    exit(EXIT_FAILURE);
+		}
+		break;
+	    case 'a':
+		after = strtol(optarg, &endptr, 10);
+		if (endptr == optarg) {
+		    std::cerr << "-a: cannot convert " << optarg << " to a number" << std::endl;
+		    exit(EXIT_FAILURE);
+		}
 		break;
 	    default:
 		usage(argv[0]);
@@ -279,7 +306,7 @@ srand((int)(time(NULL)));
     settings.hardcutEnabled = true;
     settings.hardcutDuration = 60;
     settings.hardcutSensitivity = 1.0;
-    settings.beatSensitivity = 1.0;
+    settings.beatSensitivity = beatsens;
     settings.aspectCorrection = 1;
     settings.shuffleEnabled = 1;
     settings.softCutRatingsEnabled = 1; // ???
@@ -424,28 +451,31 @@ srand((int)(time(NULL)));
         std::cerr << "Could not find preset " << presetName << std::endl;
     }
 
-    while (! app->done) {
+    auto oneframe = [&](SNDFILE *sndf, snd_pcm_t *pcm_hnd) {
         app->renderFrame();
-
-        // Get samples from the audio file as needed per frame
-
-	int smplsize = app->sndInfo.channels * sizeof(short),
+        unsigned char *samplebuf;
+	sf_count_t nsamples;
+	int smplsize, buflen;
+        if (sndf != NULL) {
+	    smplsize = app->sndInfo.channels * sizeof(short),
 	    buflen = asamples * smplsize;
-	unsigned char samplebuf[buflen];
-        sf_count_t nsamples = sf_readf_short(app->sndFile, (short *)samplebuf, asamples);
-	if (nsamples <= 0) {
-            sf_close(app->sndFile);
-	    app->done = 1;
-	} else {
-	    app->pcm()->addPCM16Data((short *)samplebuf, nsamples);
+	    samplebuf = (unsigned char *)alloca(buflen);
+            nsamples = sf_readf_short(app->sndFile, (short *)samplebuf, asamples);
+	    if (nsamples <= 0) {
+                sf_close(app->sndFile);
+		app->done = 2;
+                return;
+	    } else {
+	        app->pcm()->addPCM16Data((short *)samplebuf, nsamples);
+	    }
 	}
 	unsigned char *ptr;
 	sf_count_t left;
-	if (pcm_handle != NULL) {
+	if (pcm_hnd != NULL && sndf != NULL) {
 	    for(ptr = samplebuf, left = nsamples; left > 0 ; left -= period, ptr += period * smplsize) {
 	        sf_count_t wrtsize = (left > period)?period:left;
-                if (pcm = snd_pcm_writei(pcm_handle, ptr, wrtsize) == -EPIPE) {
- 	            snd_pcm_prepare(pcm_handle);
+                if (pcm = snd_pcm_writei(pcm_hnd, ptr, wrtsize) == -EPIPE) {
+ 	            snd_pcm_prepare(pcm_hnd);
                 } else if (pcm < 0) {
                     printf("ERROR. Can't write to PCM device. %s\n", snd_strerror(pcm));
   	        }
@@ -453,13 +483,30 @@ srand((int)(time(NULL)));
 	}
         app->pollEvent();
         Uint32 elapsed = SDL_GetTicks() - last_time;
-	if (pcm_handle == NULL) {
+	if (pcm_hnd == NULL) {
             if (elapsed < frame_delay)
                 SDL_Delay(frame_delay - elapsed);
 	}
         last_time = SDL_GetTicks();
+    };
+
+
+    for(int i = 0; !app->done && i < before * fps ; i++) {
+	oneframe(NULL, NULL);
     }
-    
+
+    while (!app->done) {
+        oneframe(app->sndFile, pcm_handle);
+    }
+
+    if (app->done == 2) {
+	app->done = 0;
+    }
+
+    for(int i = 0; !app->done && i < after * fps ; i++) {
+	oneframe(NULL, NULL);
+    }
+
     SDL_GL_DeleteContext(glCtx);
 
     delete app;

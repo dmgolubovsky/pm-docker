@@ -61,7 +61,7 @@ class projectMSND : public projectM {
 public:
 
 
-    bool done;
+    int done;
     bool mouseDown = false;
     bool wasapi = false; // Used to track if wasapi is currently active. This bool will allow us to run a WASAPI app and still toggle to microphone inputs.
     bool fakeAudio = false; // Used to track fake audio, so we can turn it off and on.
@@ -69,11 +69,6 @@ public:
     projectMSND(Settings settings, int flags);
     projectMSND(std::string config_file, int flags);
     void init(SDL_Window *window, SDL_GLContext *glCtx, const bool renderToTexture = false);
-    int openAudioInput();
-    int toggleAudioInput();
-    int initAudioInput();
-    void beginAudioCapture();
-    void endAudioCapture();
     void stretchMonitors();
     void nextMonitor();
     void toggleFullScreen();
@@ -82,7 +77,6 @@ public:
     void touchDrag(float x, float y, int pressure);
     void touchDestroy(float x, float y);
     void touchDestroyAll();
-    void setHelpText(const std::string& theValue);
     void renderFrame();
     void pollEvent();
     void maximize();
@@ -92,13 +86,12 @@ public:
     std::string getActivePresetName();
     SNDFILE *sndFile;
     SF_INFO sndInfo;
-    void addFakePCM();
     
     virtual void presetSwitchedEvent(bool isHardCut, size_t index) const;
 
     unsigned short audioChannelsCount;
-    static void audioInputCallbackF32(void *userdata, unsigned char *stream, int len);
-    static void audioInputCallbackS16(void *userdata, unsigned char *stream, int len);
+//    static void audioInputCallbackF32(void *userdata, unsigned char *stream, int len);
+//    static void audioInputCallbackS16(void *userdata, unsigned char *stream, int len);
 
 private:
     SDL_Window *win;
@@ -122,7 +115,6 @@ private:
     SDL_AudioDeviceID selectedAudioDevice;
 
 
-    void scrollHandler(SDL_Event *);
     void keyHandler(SDL_Event *);
     void renderTexture();
 };
