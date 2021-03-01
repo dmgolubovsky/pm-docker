@@ -5,7 +5,7 @@ from ubuntu:20.04
 run apt -y update
 
 run env DEBIAN_FRONTEND=noninteractive apt -y install git pkg-config autoconf automake libtool make libgl-dev libsdl2-dev \
-                        libglm-dev g++ libsndfile1-dev
+                        libglm-dev g++ libsndfile1-dev ffmpeg
 
 add projectm /projectm
 

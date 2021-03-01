@@ -71,7 +71,7 @@ public:
     void init(SDL_Window *window, SDL_GLContext *glCtx, const bool renderToTexture = false);
     void stretchMonitors();
     void nextMonitor();
-    void toggleFullScreen();
+    void setFullScreen();
     void resize(unsigned int width, unsigned int height);
     void touch(float x, float y, int pressure, int touchtype = 0);
     void touchDrag(float x, float y, int pressure);

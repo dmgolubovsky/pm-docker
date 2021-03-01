@@ -117,9 +117,11 @@ std::string getConfigFilePath(std::string datadir_path) {
 //      -d playback audio device
 //      -b seconds before audio starts
 //      -a seconds after audio ends
+//      -v video name to be passed to ffmpeg
+//      -f <fullscreen>
 
 void usage(char *av0) {
-    std::cerr << "Usage: " << av0 << " [-p preset] [-D datadir] [-d device] [-b before] [-a after] [-s beatsens] audiofile" << std::endl;
+    std::cerr << "Usage: " << av0 << " [-p preset] [-D datadir] [-d device] [-b before] [-a after] [-s beatsens] [-v video]  audiofile" << std::endl;
     exit(EXIT_FAILURE);
 }
 
@@ -136,14 +138,19 @@ srand((int)(time(NULL)));
     std::string audioFile;
     std::string datadirPath;
     std::string pcmDevice;
+    std::string videoName;
+    bool fullscrn = false;
 
     if (argc == 1) {
 	usage(argv[0]);
     }
 
-    while ((opt = getopt(argc, argv, "s:a:b:d:D:p:")) != -1) {
+    while ((opt = getopt(argc, argv, "s:a:b:d:D:p:f")) != -1) {
 	char *endptr;
 	switch (opt) {
+	    case 'f':
+		fullscrn = true;
+		break;
 	    case 'p':
 		presetName = optarg;
 		break;
@@ -152,6 +159,9 @@ srand((int)(time(NULL)));
 		break;
 	    case 'd':
 		pcmDevice = optarg;
+		break;
+	    case 'v':
+		videoName = optarg;
 		break;
 	    case 's':
 		errno = 0;
@@ -239,22 +249,8 @@ srand((int)(time(NULL)));
     
     SDL_GL_GetDrawableSize(win,&width,&height);
     
-#if STEREOSCOPIC_SBS
 
-	// enable stereo
-	if (SDL_GL_SetAttribute(SDL_GL_STEREO, 1) == 0) 
-	{
-		SDL_Log("SDL_GL_STEREO: true");
-	}
-
-	// requires fullscreen mode
-	SDL_ShowCursor(false);
-	SDL_SetWindowFullscreen(win, SDL_WINDOW_FULLSCREEN);
-
-#endif
-
-
-	SDL_GLContext glCtx = SDL_GL_CreateContext(win);
+    SDL_GLContext glCtx = SDL_GL_CreateContext(win);
 
 
     SDL_Log("GL_VERSION: %s", glGetString(GL_VERSION));
@@ -335,9 +331,17 @@ srand((int)(time(NULL)));
     }
     app->init(win, &glCtx);
 
-#if STEREOSCOPIC_SBS
-	app->toggleFullScreen();
-#endif
+    if (fullscrn) {
+	app->setFullScreen();
+    }
+
+    int wh, ww;
+
+    SDL_GetWindowSize(win, &ww, &wh);
+
+    std::cout << "window height: " << wh << " width: " << ww << std::endl;
+
+
 #if OGL_DEBUG && !USE_GLES
     glEnable(GL_DEBUG_OUTPUT);
     glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
@@ -369,8 +373,6 @@ srand((int)(time(NULL)));
     if (fps <= 0)
         fps = 60;
     const Uint32 frame_delay = 1000/fps;
-    int asamples = app->sndInfo.samplerate / fps;
-    std::cout << "Videoframe: " << frame_delay << " ms.; " << asamples << " audio samples/video frame" << std::endl;
     Uint32 last_time = SDL_GetTicks();
     app->audioChannelsCount = app->sndInfo.channels;
     snd_pcm_t *pcm_handle = NULL;
@@ -433,6 +435,9 @@ srand((int)(time(NULL)));
         printf("pcm ready\n");
     }
 
+    int asamples = app->sndInfo.samplerate / fps;
+    std::cout << "Videoframe: " << frame_delay << " ms.; " << asamples << " audio samples/video frame" << std::endl;
+
     int npresets = app->getPlaylistSize();
 
     std::cout << "N presets: " << npresets << std::endl;
@@ -451,8 +456,17 @@ srand((int)(time(NULL)));
         std::cerr << "Could not find preset " << presetName << std::endl;
     }
 
+    GLubyte *buffer = NULL;
+
+    if (!videoName.empty()) {
+	buffer = (GLubyte *)malloc( sizeof( GLubyte ) * ww * wh * 3 );
+    }
+
     auto oneframe = [&](SNDFILE *sndf, snd_pcm_t *pcm_hnd) {
         app->renderFrame();
+	if (buffer != NULL) {
+	    glReadPixels(0, 0, ww, wh, GL_RGB, GL_UNSIGNED_BYTE, buffer);
+	}
         unsigned char *samplebuf;
 	sf_count_t nsamples;
 	int smplsize, buflen;

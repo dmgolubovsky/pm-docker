@@ -105,17 +105,11 @@ void projectMSND::nextMonitor()
 	}
 }
 
-void projectMSND::toggleFullScreen() {
+void projectMSND::setFullScreen() {
     maximize();
-    if (isFullScreen) {
-        SDL_SetWindowFullscreen(win, 0);
-        isFullScreen = false;
-        SDL_ShowCursor(true);
-    } else {
-        SDL_ShowCursor(false);
-        SDL_SetWindowFullscreen(win, SDL_WINDOW_FULLSCREEN);
-        isFullScreen = true;
-    }
+    SDL_ShowCursor(false);
+    SDL_SetWindowFullscreen(win, SDL_WINDOW_FULLSCREEN);
+    isFullScreen = true;
 }
 
 void projectMSND::keyHandler(SDL_Event *sdl_evt) {
@@ -241,10 +235,6 @@ void projectMSND::init(SDL_Window *window, SDL_GLContext *_glCtx, const bool _re
     win = window;
     glCtx = _glCtx;
     projectM_resetGL(width, height);
-
-#ifdef WASAPI_LOOPBACK
-    wasapi = true;
-#endif
 
     // are we rendering to a texture?
     renderToTexture = _renderToTexture;
