@@ -41,7 +41,6 @@
 
 #include "pmSND.hpp"
 
-#if OGL_DEBUG
 void DebugLog(GLenum source,
                GLenum type,
                GLuint id,
@@ -58,7 +57,6 @@ void DebugLog(GLenum source,
            severity << "\n" << message << "\n";
        }
  }
-#endif
 
 // return path to config file to use
 std::string getConfigFilePath(std::string datadir_path) {
@@ -119,9 +117,10 @@ std::string getConfigFilePath(std::string datadir_path) {
 //      -a seconds after audio ends
 //      -v video name to be passed to ffmpeg
 //      -f <fullscreen>
+//      -x <debug openGL>
 
 void usage(char *av0) {
-    std::cerr << "Usage: " << av0 << " [-p preset] [-D datadir] [-d device] [-b before] [-a after] [-s beatsens] [-v video]  audiofile" << std::endl;
+    std::cerr << "Usage: " << av0 << " [-p preset] [-D datadir] [-d device] [-b before] [-a after] [-s beatsens] [-v video] [-fx] audiofile" << std::endl;
     exit(EXIT_FAILURE);
 }
 
@@ -140,14 +139,18 @@ srand((int)(time(NULL)));
     std::string pcmDevice;
     std::string videoName;
     bool fullscrn = false;
+    bool dbgogl = false;
 
     if (argc == 1) {
 	usage(argv[0]);
     }
 
-    while ((opt = getopt(argc, argv, "s:a:b:d:D:p:f")) != -1) {
+    while ((opt = getopt(argc, argv, "v:s:a:b:d:D:p:fx")) != -1) {
 	char *endptr;
 	switch (opt) {
+	    case 'x':
+		dbgogl = true;
+		break;
 	    case 'f':
 		fullscrn = true;
 		break;
@@ -341,11 +344,12 @@ srand((int)(time(NULL)));
 
     std::cout << "window height: " << wh << " width: " << ww << std::endl;
 
-
-#if OGL_DEBUG && !USE_GLES
-    glEnable(GL_DEBUG_OUTPUT);
-    glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
-    glDebugMessageCallback(DebugLog, NULL);
+#if !USE_GLES
+    if (dbgogl) {
+        glEnable(GL_DEBUG_OUTPUT);
+        glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+        glDebugMessageCallback(DebugLog, NULL);
+    }
 #endif
 
 #if TEST_ALL_PRESETS
@@ -457,15 +461,79 @@ srand((int)(time(NULL)));
     }
 
     GLubyte *buffer = NULL;
+    int glbufsz = sizeof( GLubyte ) * ww * wh * 4;
+    int ffmpipe[2] = {-1, -1};
+    GLuint pbo;
 
     if (!videoName.empty()) {
-	buffer = (GLubyte *)malloc( sizeof( GLubyte ) * ww * wh * 3 );
+	buffer = (GLubyte *)malloc(glbufsz);
+	memset(buffer, 127, glbufsz);
+        int rc = pipe(ffmpipe);
+	if (rc == -1) {
+	    std::cerr << "ffmpeg pipe creation error " << strerror(errno) << std::endl;
+	    exit(EXIT_FAILURE);
+	}
+	int ffmpid = fork();
+	if (ffmpid < 0) {
+	    std::cerr << "ffmpeg process creation error " << strerror(errno) << std::endl;
+	    exit(EXIT_FAILURE);
+	} else if (ffmpid == 0) {
+	    char fmtbuf[50];
+	    snprintf(fmtbuf, 49, "%dx%d", ww, wh);
+	    char fpsbuf[10];
+	    snprintf(fpsbuf, 9, "%d", fps);
+	    char pipebuf[20];
+	    snprintf(pipebuf, 19, "pipe:%d", ffmpipe[0]);
+	    char *ffmargs[] = { "-y", "-video_size", fmtbuf, "-framerate", fpsbuf,
+		                "-f", "rawvideo", "-pix_fmt", "rgba", "-s", fmtbuf,
+				"-i", pipebuf, "-vcodec", "ffvhuff", "-pix_fmt", "gbrp", "-y", (char *)videoName.c_str(),
+				NULL};
+	    rc = execvp("ffmpeg", ffmargs);
+	    if (rc < 0) {
+ 	        std::cerr << "ffmpeg process exec error " << strerror(errno) << std::endl;
+	        exit(EXIT_FAILURE);
+	    }
+	}
+        glGenBuffers(1, &pbo);
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
+        glBufferData(GL_PIXEL_PACK_BUFFER, glbufsz, 0, GL_DYNAMIC_READ);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);	
     }
 
     auto oneframe = [&](SNDFILE *sndf, snd_pcm_t *pcm_hnd) {
         app->renderFrame();
-	if (buffer != NULL) {
-	    glReadPixels(0, 0, ww, wh, GL_RGB, GL_UNSIGNED_BYTE, buffer);
+	if (buffer != NULL && ffmpipe[1] > -1) {
+	    glGetError();
+	    /*
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
+            glReadPixels(0, 0, ww, wh, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+	    glMemoryBarrier(GL_PIXEL_BUFFER_BARRIER_BIT);
+	    GLsync fncs = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+	    glClientWaitSync(fncs, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000);
+            GLubyte *ptr = (GLubyte *)glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, glbufsz, GL_MAP_READ_BIT);
+            memcpy(buffer, ptr, glbufsz);
+            glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+	    */
+	    glReadPixels(0, 0, ww, wh, GL_RGBA, GL_UNSIGNED_BYTE, buffer);
+	    if (dbgogl) {
+		GLenum glerr = glGetError();
+		if (glerr != GL_NO_ERROR) {
+		    std::cerr << "error read pixels " << glerr << std::endl;
+ 		    close(ffmpipe[1]);
+		    ffmpipe[1] = -1;
+  		    app->done = 1;
+		    return;
+		}
+	    }
+	    int rc = write(ffmpipe[1], buffer, glbufsz);
+	    if (rc < 0) {
+	        std::cerr << "error writing to ffmpeg pipe " << strerror(errno) << std::endl;
+		close(ffmpipe[1]);
+		ffmpipe[1] = -1;
+		app->done = 1;
+		return;
+	    }
 	}
         unsigned char *samplebuf;
 	sf_count_t nsamples;
