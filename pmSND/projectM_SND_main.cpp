@@ -407,7 +407,6 @@ srand((int)(time(NULL)));
         fps = 60;
     const Uint32 frame_delay = 1000/fps;
     Uint32 last_time = SDL_GetTicks();
-    struct timeval tm_last, tm_elps, tm_sleep;
     app->audioChannelsCount = app->sndInfo.channels;
     snd_pcm_t *pcm_handle = NULL;
     snd_pcm_hw_params_t *params;
@@ -524,8 +523,8 @@ srand((int)(time(NULL)));
 			        "-itsoffset", itsoffset, 
 				"-i", (char *)audioFile.c_str(), 
 				"-vcodec", "ffvhuff", "-pix_fmt", "yuv420p", 
-				"-acodec", "aac",
-				"-async", "1", "-y", (char *)videoName.c_str(),
+				"-acodec", "aac", "-filter_complex", "[1:0] apad", "-shortest",
+				"-async", "1", "-y", (char *)videoName.c_str(), 
 				NULL};
 	    rc = execvp("ffmpeg", ffmargs);
 	    if (rc < 0) {
@@ -544,7 +543,6 @@ srand((int)(time(NULL)));
     }
 
     auto oneframe = [&](SNDFILE *sndf, snd_pcm_t *pcm_hnd) {
-	gettimeofday(&tm_last, NULL);
 	frameno++;
         app->renderFrame();
 	if (ffmpipe[1] > -1) {
@@ -554,7 +552,7 @@ srand((int)(time(NULL)));
 	    glFlush(); // its position here is very important
             GLubyte *ptr = (GLubyte *)glMapNamedBuffer(pbo[frameno & 1], GL_READ_ONLY);
 	    int rc = write(ffmpipe[1], ptr, glbufsz);
-            glUnmapNamedBuffer(pbo[frameno & 1]);
+	    glUnmapNamedBuffer(pbo[frameno & 1]);
 	    if (rc < 0) {
 	        std::cerr << "error writing to ffmpeg video pipe " << strerror(errno) << std::endl;
 		close(ffmpipe[1]);
@@ -579,13 +577,17 @@ srand((int)(time(NULL)));
 	    } else {
 	        app->pcm()->addPCM16Data((short *)samplebuf, nsamples);
 	    }
+	} else {
+	    samplebuf = (unsigned char *)alloca(128);
+	    app->pcm()->addPCM16Data((short *)samplebuf, 32);
 	}
-	unsigned char *ptr;
+	unsigned char *aptr;
 	sf_count_t left;
 	if (pcm_hnd != NULL && sndf != NULL) {
-	    for(ptr = samplebuf, left = nsamples; left > 0 ; left -= period, ptr += period * smplsize) {
+	    snd_pcm_nonblock(pcm_hnd, 0);
+	    for(aptr = samplebuf, left = nsamples; left > 0 ; left -= period, aptr += period * smplsize) {
 	        sf_count_t wrtsize = (left > period)?period:left;
-                if (pcm = snd_pcm_writei(pcm_hnd, ptr, wrtsize) == -EPIPE) {
+                if (pcm = snd_pcm_writei(pcm_hnd, aptr, wrtsize) == -EPIPE) {
  	            snd_pcm_prepare(pcm_hnd);
                 } else if (pcm < 0) {
                     printf("ERROR. Can't write to PCM device. %s\n", snd_strerror(pcm));
@@ -606,22 +608,28 @@ srand((int)(time(NULL)));
 	
     };
 
+printf("before\n");
 
     for(int i = 0; !app->done && i < before * fps ; i++) {
 	oneframe(NULL, NULL);
     }
-
+printf("body\n");
     while (!app->done) {
         oneframe(app->sndFile, pcm_handle);
     }
 
     if (app->done == 2) {
 	app->done = 0;
+        snd_pcm_close(pcm_handle);
+	pcm_handle = NULL;
     }
+printf("after\n");
 
     for(int i = 0; !app->done && i < after * fps ; i++) {
 	oneframe(NULL, NULL);
     }
+
+    close(ffmpipe[1]);
 
     SDL_GL_DeleteContext(glCtx);
 
