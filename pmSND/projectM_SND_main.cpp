@@ -37,9 +37,42 @@
 
 #include <unistd.h>
 #include <sndfile.h>
+#include <time.h>
+#include <sys/time.h>
 #include <alsa/asoundlib.h>
 
 #include "pmSND.hpp"
+
+/* from the GNU C Library book */
+
+     /* Subtract the `struct timeval' values X and Y,
+        storing the result in RESULT.
+        Return 1 if the difference is negative, otherwise 0.  */
+     
+     int
+     timeval_subtract (struct timeval *result, struct timeval *x, struct timeval *y)
+     {
+       /* Perform the carry for the later subtraction by updating y. */
+       if (x->tv_usec < y->tv_usec) {
+         int nsec = (y->tv_usec - x->tv_usec) / 1000000 + 1;
+         y->tv_usec -= 1000000 * nsec;
+         y->tv_sec += nsec;
+       }
+       if (x->tv_usec - y->tv_usec > 1000000) {
+         int nsec = (x->tv_usec - y->tv_usec) / 1000000;
+         y->tv_usec += 1000000 * nsec;
+         y->tv_sec -= nsec;
+       }
+     
+       /* Compute the time remaining to wait.
+          tv_usec is certainly positive. */
+       result->tv_sec = x->tv_sec - y->tv_sec;
+       result->tv_usec = x->tv_usec - y->tv_usec;
+     
+       /* Return 1 if result is negative. */
+       return x->tv_sec < y->tv_sec;
+     }
+  
 
 void DebugLog(GLenum source,
                GLenum type,
@@ -233,19 +266,10 @@ srand((int)(time(NULL)));
     int width = initialWindowBounds.w;
     int height = initialWindowBounds.h;
 
-#ifdef USE_GLES
-    // use GLES 2.0 (this may need adjusting)
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-
-#else
-	// Disabling compatibility profile
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
 
-#endif
 
     
     SDL_Window *win = SDL_CreateWindow("projectM", 0, 0, width, height, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
@@ -292,6 +316,13 @@ srand((int)(time(NULL)));
 	}
     }
     if (maxRefreshRate <= 60) maxRefreshRate = 60;
+
+    current.format = SDL_PIXELFORMAT_BGRA32;
+
+    int sdlrc = SDL_SetWindowDisplayMode(win, &current);
+    if (sdlrc < 0) {
+	std::cerr << "cannot set display mode: " << SDL_GetError() << std::endl;
+    }
 
     float heightWidthRatio = (float)height / (float)width;
     projectM::Settings settings;
@@ -344,13 +375,11 @@ srand((int)(time(NULL)));
 
     std::cout << "window height: " << wh << " width: " << ww << std::endl;
 
-#if !USE_GLES
     if (dbgogl) {
         glEnable(GL_DEBUG_OUTPUT);
         glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
         glDebugMessageCallback(DebugLog, NULL);
     }
-#endif
 
 #if TEST_ALL_PRESETS
     uint buildErrors = 0;
@@ -378,6 +407,7 @@ srand((int)(time(NULL)));
         fps = 60;
     const Uint32 frame_delay = 1000/fps;
     Uint32 last_time = SDL_GetTicks();
+    struct timeval tm_last, tm_elps, tm_sleep;
     app->audioChannelsCount = app->sndInfo.channels;
     snd_pcm_t *pcm_handle = NULL;
     snd_pcm_hw_params_t *params;
@@ -460,17 +490,19 @@ srand((int)(time(NULL)));
         std::cerr << "Could not find preset " << presetName << std::endl;
     }
 
-    GLubyte *buffer = NULL;
     int glbufsz = sizeof( GLubyte ) * ww * wh * 4;
     int ffmpipe[2] = {-1, -1};
-    GLuint pbo;
+    GLuint pbo[2];
+    unsigned int frameno = 0;
 
     if (!videoName.empty()) {
-	buffer = (GLubyte *)malloc(glbufsz);
-	memset(buffer, 127, glbufsz);
         int rc = pipe(ffmpipe);
 	if (rc == -1) {
-	    std::cerr << "ffmpeg pipe creation error " << strerror(errno) << std::endl;
+	    std::cerr << "ffmpeg video pipe creation error " << strerror(errno) << std::endl;
+	    exit(EXIT_FAILURE);
+	}
+	if (rc == -1) {
+	    std::cerr << "ffmpeg audio pipe creation error " << strerror(errno) << std::endl;
 	    exit(EXIT_FAILURE);
 	}
 	int ffmpid = fork();
@@ -484,9 +516,16 @@ srand((int)(time(NULL)));
 	    snprintf(fpsbuf, 9, "%d", fps);
 	    char pipebuf[20];
 	    snprintf(pipebuf, 19, "pipe:%d", ffmpipe[0]);
+	    char itsoffset[10];
+	    snprintf(itsoffset, 9, "%ld", before);
 	    char *ffmargs[] = { "-y", "-video_size", fmtbuf, "-framerate", fpsbuf,
-		                "-f", "rawvideo", "-pix_fmt", "rgba", "-s", fmtbuf,
-				"-i", pipebuf, "-vcodec", "ffvhuff", "-pix_fmt", "gbrp", "-y", (char *)videoName.c_str(),
+		                "-f", "rawvideo", "-pix_fmt", "bgra", "-s", fmtbuf,
+				"-i", pipebuf,
+			        "-itsoffset", itsoffset, 
+				"-i", (char *)audioFile.c_str(), 
+				"-vcodec", "ffvhuff", "-pix_fmt", "yuv420p", 
+				"-acodec", "aac",
+				"-async", "1", "-y", (char *)videoName.c_str(),
 				NULL};
 	    rc = execvp("ffmpeg", ffmargs);
 	    if (rc < 0) {
@@ -494,46 +533,36 @@ srand((int)(time(NULL)));
 	        exit(EXIT_FAILURE);
 	    }
 	}
-        glGenBuffers(1, &pbo);
-	glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
-        glBufferData(GL_PIXEL_PACK_BUFFER, glbufsz, 0, GL_DYNAMIC_READ);
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);	
+        glGenBuffers(2, pbo);
+
+	for (int np = 0; np < 2; np++) {
+	    glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo[np]);
+            glBufferData(GL_PIXEL_PACK_BUFFER, glbufsz, 0, GL_DYNAMIC_READ);
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);	
+	}
+	
     }
 
     auto oneframe = [&](SNDFILE *sndf, snd_pcm_t *pcm_hnd) {
+	gettimeofday(&tm_last, NULL);
+	frameno++;
         app->renderFrame();
-	if (buffer != NULL && ffmpipe[1] > -1) {
-	    glGetError();
-	    /*
-            glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
-            glReadPixels(0, 0, ww, wh, GL_RGBA, GL_UNSIGNED_BYTE, 0);
-	    glMemoryBarrier(GL_PIXEL_BUFFER_BARRIER_BIT);
-	    GLsync fncs = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-	    glClientWaitSync(fncs, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000);
-            GLubyte *ptr = (GLubyte *)glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, glbufsz, GL_MAP_READ_BIT);
-            memcpy(buffer, ptr, glbufsz);
-            glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+	if (ffmpipe[1] > -1) {
+    	    glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo[(frameno - 1) & 1]);
+            glReadPixels(0, 0, ww, wh, GL_BGRA, GL_UNSIGNED_BYTE, 0);
             glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-	    */
-	    glReadPixels(0, 0, ww, wh, GL_RGBA, GL_UNSIGNED_BYTE, buffer);
-	    if (dbgogl) {
-		GLenum glerr = glGetError();
-		if (glerr != GL_NO_ERROR) {
-		    std::cerr << "error read pixels " << glerr << std::endl;
- 		    close(ffmpipe[1]);
-		    ffmpipe[1] = -1;
-  		    app->done = 1;
-		    return;
-		}
-	    }
-	    int rc = write(ffmpipe[1], buffer, glbufsz);
+	    glFlush(); // its position here is very important
+            GLubyte *ptr = (GLubyte *)glMapNamedBuffer(pbo[frameno & 1], GL_READ_ONLY);
+	    int rc = write(ffmpipe[1], ptr, glbufsz);
+            glUnmapNamedBuffer(pbo[frameno & 1]);
 	    if (rc < 0) {
-	        std::cerr << "error writing to ffmpeg pipe " << strerror(errno) << std::endl;
+	        std::cerr << "error writing to ffmpeg video pipe " << strerror(errno) << std::endl;
 		close(ffmpipe[1]);
 		ffmpipe[1] = -1;
 		app->done = 1;
 		return;
 	    }
+	    fsync(ffmpipe[1]);
 	}
         unsigned char *samplebuf;
 	sf_count_t nsamples;
@@ -564,12 +593,17 @@ srand((int)(time(NULL)));
 	    }
 	}
         app->pollEvent();
+
+
+	
         Uint32 elapsed = SDL_GetTicks() - last_time;
 	if (pcm_hnd == NULL) {
             if (elapsed < frame_delay)
                 SDL_Delay(frame_delay - elapsed);
 	}
+	Uint32 prevlast = last_time;
         last_time = SDL_GetTicks();
+	
     };
 
 
