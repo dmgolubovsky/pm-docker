@@ -40,39 +40,10 @@
 #include <time.h>
 #include <sys/time.h>
 #include <alsa/asoundlib.h>
+#include <alsa/pcm.h>
 
 #include "pmSND.hpp"
 
-/* from the GNU C Library book */
-
-     /* Subtract the `struct timeval' values X and Y,
-        storing the result in RESULT.
-        Return 1 if the difference is negative, otherwise 0.  */
-     
-     int
-     timeval_subtract (struct timeval *result, struct timeval *x, struct timeval *y)
-     {
-       /* Perform the carry for the later subtraction by updating y. */
-       if (x->tv_usec < y->tv_usec) {
-         int nsec = (y->tv_usec - x->tv_usec) / 1000000 + 1;
-         y->tv_usec -= 1000000 * nsec;
-         y->tv_sec += nsec;
-       }
-       if (x->tv_usec - y->tv_usec > 1000000) {
-         int nsec = (x->tv_usec - y->tv_usec) / 1000000;
-         y->tv_usec += 1000000 * nsec;
-         y->tv_sec -= nsec;
-       }
-     
-       /* Compute the time remaining to wait.
-          tv_usec is certainly positive. */
-       result->tv_sec = x->tv_sec - y->tv_sec;
-       result->tv_usec = x->tv_usec - y->tv_usec;
-     
-       /* Return 1 if result is negative. */
-       return x->tv_sec < y->tv_sec;
-     }
-  
 
 void DebugLog(GLenum source,
                GLenum type,
@@ -406,6 +377,9 @@ srand((int)(time(NULL)));
     if (fps <= 0)
         fps = 60;
     const Uint32 frame_delay = 1000/fps;
+    struct timespec frstart, frend, frsleep, fract;
+    long long compns = 0;
+    useconds_t prevdly;
     Uint32 last_time = SDL_GetTicks();
     app->audioChannelsCount = app->sndInfo.channels;
     snd_pcm_t *pcm_handle = NULL;
@@ -471,6 +445,8 @@ srand((int)(time(NULL)));
     int asamples = app->sndInfo.samplerate / fps;
     std::cout << "Videoframe: " << frame_delay << " ms.; " << asamples << " audio samples/video frame" << std::endl;
 
+    prevdly = asamples;
+
     int npresets = app->getPlaylistSize();
 
     std::cout << "N presets: " << npresets << std::endl;
@@ -500,10 +476,6 @@ srand((int)(time(NULL)));
 	    std::cerr << "ffmpeg video pipe creation error " << strerror(errno) << std::endl;
 	    exit(EXIT_FAILURE);
 	}
-	if (rc == -1) {
-	    std::cerr << "ffmpeg audio pipe creation error " << strerror(errno) << std::endl;
-	    exit(EXIT_FAILURE);
-	}
 	int ffmpid = fork();
 	if (ffmpid < 0) {
 	    std::cerr << "ffmpeg process creation error " << strerror(errno) << std::endl;
@@ -517,16 +489,16 @@ srand((int)(time(NULL)));
 	    snprintf(pipebuf, 19, "pipe:%d", ffmpipe[0]);
 	    char itsoffset[10];
 	    snprintf(itsoffset, 9, "%ld", before);
-	    char *ffmargs[] = { "-y", "-video_size", fmtbuf, "-framerate", fpsbuf,
+	    const char *ffmargs[] = { "-y", "-video_size", fmtbuf, "-framerate", fpsbuf,
 		                "-f", "rawvideo", "-pix_fmt", "bgra", "-s", fmtbuf,
 				"-i", pipebuf,
 			        "-itsoffset", itsoffset, 
-				"-i", (char *)audioFile.c_str(), 
+				"-i", audioFile.c_str(), 
 				"-vcodec", "ffvhuff", "-pix_fmt", "yuv420p", 
 				"-acodec", "aac", "-filter_complex", "[1:0] apad", "-shortest",
-				"-async", "1", "-y", (char *)videoName.c_str(), 
+				"-async", "1", "-y", videoName.c_str(), 
 				NULL};
-	    rc = execvp("ffmpeg", ffmargs);
+	    rc = execvp("ffmpeg", (char **)ffmargs);
 	    if (rc < 0) {
  	        std::cerr << "ffmpeg process exec error " << strerror(errno) << std::endl;
 	        exit(EXIT_FAILURE);
@@ -544,6 +516,7 @@ srand((int)(time(NULL)));
 
     auto oneframe = [&](SNDFILE *sndf, snd_pcm_t *pcm_hnd) {
 	frameno++;
+	clock_gettime(CLOCK_REALTIME, &frstart);
         app->renderFrame();
 	if (ffmpipe[1] > -1) {
     	    glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo[(frameno - 1) & 1]);
@@ -596,34 +569,37 @@ srand((int)(time(NULL)));
 	}
         app->pollEvent();
 
-
-	
-        Uint32 elapsed = SDL_GetTicks() - last_time;
-	if (pcm_hnd == NULL) {
-            if (elapsed < frame_delay)
-                SDL_Delay(frame_delay - elapsed);
+        if (pcm_hnd) {
+	    clock_gettime(CLOCK_REALTIME, &frend);
+	    unsigned long long startns, endns, durns, planns = frame_delay * 1000000ull, actns;
+	    startns = frstart.tv_sec * 1000000000ull + frstart.tv_nsec;
+	    endns = frend.tv_sec * 1000000000ull + frend.tv_nsec;
+	    durns = endns - startns;
+	    if (durns < planns) {
+                frsleep.tv_sec = 0;
+		frsleep.tv_nsec = planns - durns - (compns > 0 ? compns : 0);
+                clock_nanosleep(CLOCK_REALTIME, 0, &frsleep, NULL);
+	    }
+	    clock_gettime(CLOCK_REALTIME, &fract);
+	    actns = fract.tv_sec * 1000000000ull + fract.tv_nsec;
+	    compns = actns - startns - planns;
 	}
-	Uint32 prevlast = last_time;
-        last_time = SDL_GetTicks();
 	
     };
 
-printf("before\n");
 
     for(int i = 0; !app->done && i < before * fps ; i++) {
 	oneframe(NULL, NULL);
     }
-printf("body\n");
     while (!app->done) {
         oneframe(app->sndFile, pcm_handle);
     }
 
     if (app->done == 2) {
 	app->done = 0;
-        snd_pcm_close(pcm_handle);
+        if (pcm_handle) snd_pcm_close(pcm_handle);
 	pcm_handle = NULL;
     }
-printf("after\n");
 
     for(int i = 0; !app->done && i < after * fps ; i++) {
 	oneframe(NULL, NULL);
